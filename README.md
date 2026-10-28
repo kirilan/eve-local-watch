@@ -6,6 +6,8 @@ game running through Steam/Proton; also runs on **Windows** (see
 [Windows](#windows)). A **terminal UI** (see [Terminal UI](#terminal-ui)) gives you
 a live dashboard on both.
 
+![The terminal UI with a hostile in Local and intel reports within range](docs/tui_threat.svg)
+
 It only *looks* at the screen: it captures the EVE window, reads the pixels and
 plays a sound / shows a notification. It never reads game memory, sends input
 or talks to the client. (Screen-reading tools are still a grey area in CCP's
@@ -72,6 +74,8 @@ runs the plain command-line tool instead. The exe is unsigned, so Windows
 SmartScreen may warn the first time.)
 
 Press `s` to start watching. The screen shows:
+
+![Two EVE clients watched at once, both all clear](docs/tui_two_clients.svg)
 
 - **Status banner**: STOPPED / NOT WATCHING / ALL CLEAR / THREAT IN LOCAL (the
   worst state across all watched clients), plus mute and neutral-alert state.
