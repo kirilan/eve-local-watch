@@ -10,8 +10,15 @@ a live dashboard on both.
 
 It only *looks* at the screen: it captures the EVE window, reads the pixels and
 plays a sound / shows a notification. It never reads game memory, sends input
-or talks to the client. (Screen-reading tools are still a grey area in CCP's
-third-party policy — use at your own discretion.)
+or talks to the client.
+
+**Is it allowed?** A grey area, so use it at your own risk. CCP has never ruled
+on screen-reading local alerts: its [third-party policy](https://www.eveonline.com/news/view/overlays-isk-buyer-amnesty-and-account-security)
+forbids tools that modify the client *or* give "any kind of unfair
+benefit/advantage", and GMs won't approve or forbid specific tools. There are
+no known bans for tools like this, but no blessing either. The intel part
+(reading the chat logs your scouts write) is what SMT and similar tools
+have done for years.
 
 - Works while EVE is on a **hidden workspace** / **covered by other windows** (captures the window itself, not the screen)
 - Finds the Local panel **automatically on start**, and again if you move it
