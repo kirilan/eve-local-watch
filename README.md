@@ -29,7 +29,8 @@ have done for years.
   table, alert history and start/stop keys (`uv run python tui.py`, or
   `EveLocalWatch.exe` on Windows)
 - **Intel**: finds your intel channel in the chat logs and warns when a
-  hostile is reported **within 5 jumps** (see [Intel](#intel-channel))
+  hostile is reported **within 5 jumps**, or up to 10 jumps out when a
+  second report has them moving closer (see [Intel](#intel-channel))
 
 ## Quick start
 
@@ -176,7 +177,7 @@ Sounds and notifications below are the Linux ones; see [Windows](#windows) for i
 | Local found again | — | "Local found again" (normal) |
 | EVE hasn't drawn a new frame for 10 s | — | "picture frozen" (normal) — the watcher may be looking at an old image |
 | EVE drawing again | — | "EVE is drawing again" (normal) |
-| Intel: hostile reported ≤ `intel_jumps` away | `dialog-warning.oga` (at most every 3 s) | "INTEL: hostile 2 jumps away" + the message (critical at 0–1 jumps, normal further out) |
+| Intel: hostile reported ≤ `intel_jumps` away, or ≤ `intel_watch_jumps` and closing in | `dialog-warning.oga` (at most every 3 s) | "INTEL: hostile 2 jumps away" + the message (critical at 0–1 jumps, normal further out) |
 
 Neutrals are treated exactly like hostiles — same alarm, same urgency, same
 repeat; the notification only names which one it is. While hostiles/neutrals remain (or Local stays lost) the sound repeats every
@@ -203,6 +204,7 @@ repeat; the notification only names which one it is. While hostiles/neutrals rem
 | `snapshot_alerts` | `true` | Save a snapshot of the frame behind every Local alarm (last 30 kept, a few MB each) |
 | `intel_channels` | `[]` | Chat channels to read intel from, e.g. `["wc.Vale+Tr+Ge"]`; `[]` = auto-detect, `false` = intel off |
 | `intel_jumps` | `5` | Alert on hostiles reported this many jumps away or closer |
+| `intel_watch_jumps` | `10` | Further out, up to this many jumps: alert only when a second report has them moving closer (0 = off) |
 | `chatlog_dir` | `""` | EVE's `Chatlogs` folder; empty = found automatically |
 | `jump_bridges` | `[]` | Extra connections counted as one jump, e.g. `[["4-HWWF", "P3EN-E"]]` (Ansiblexes) |
 | `sound_hostile`, `sound_join`, `sound_lost`, `sound_intel` | see above | Any `.oga` / `.ogg` / `.wav` path (Windows: `.wav` only) |
@@ -235,6 +237,13 @@ The watcher also follows EVE's chat logs for intel. Needs
   - contains `clr` / `clear` → printed as clear, no alarm
   - only `status` / `status?` besides the system → a question, ignored
   - anything else (pilots, ships, `nv`, a bare system name) → **hostile**
+- **Further out (6–10 jumps, `intel_watch_jumps`):** a single report is only
+  remembered. It alerts when a later hostile report is closer to you
+  than one from the last 10 minutes, and within 2 gates of it (the same gang
+  moving in, not two unrelated reports). It is printed as
+  `INTEL HOSTILE KX-2UI (7 jumps away, closing in from MO-FIF)`. A `clr`
+  for a system forgets it, and distances are measured from where you are
+  now. Within `intel_jumps`, every hostile report alerts, as before.
 - Only new messages count: history from before the watcher started, and
   messages more than 5 minutes old, are skipped. A message logged by several of
   your characters alerts once.
@@ -246,7 +255,7 @@ no log yet (channel not open, or logging off). The heartbeat adds what was
 read since the last one:
 
 ```
-12:46:08 HEARTBEAT watching: … | intel: in 4-HWWF, 37 systems within 5 jumps | wc.Vale+Tr+Ge: 14 msgs (2 hostile in range, 1 clear, 9 out of range, 2 other), last 1 min ago
+12:46:08 HEARTBEAT watching: … | intel: in 4-HWWF, 37 systems within 5 jumps (134 within 10 watched for approaching) | wc.Vale+Tr+Ge: 14 msgs (2 hostile in range, 1 approaching, 1 clear, 8 out of range, 2 other), last 1 min ago
 ```
 
 `other` covers questions, messages naming no system, and stale messages.
@@ -267,7 +276,7 @@ Only the log currently being read is summed up, so right after logging in
 `eve-local-watch intel` prints the log folder, the auto-detect score of each
 channel (when `intel_channels` isn't set), each character's system, and
 the last 25 intel messages as the watcher reads them (kind, system, jumps,
-`ALERT`). Run it to check a channel name or a message that was misread.
+`ALERT`, or `CLOSER` for one closing in from further out). Run it to check a channel name or a message that was misread.
 
 The map is built from CCP's static data export; refresh it after an
 expansion changes the map with `uv run tools/build_map.py`.

@@ -222,17 +222,31 @@ with tempfile.TemporaryDirectory() as d:
     say(intel_a, "Far", "H-5GUI  Someone")
     say(intel_a, "Late", "DAYP-G  stale", ago=w.INTEL_MAX_AGE + 60)
     say(intel_a, "Scout", "YMJG-4 cl", end="")                            # EVE mid-way through a line
-    steps.append(("hostile 1 jump, once", poll(), [("hostile", "H-5GUI", None), ("hostile", "PM-DWE", 1)]))
+    steps.append(("hostile 1 jump, once", poll(), [("hostile", "H-5GUI", 8), ("hostile", "PM-DWE", 1)]))
     with intel_a.open("ab") as f:
         f.write("r\r\n".encode("utf-16-le"))                              # ...and the rest of it
     say(intel_a, "Ask", "YMJG-4 status?")
     steps.append(("clear / status", poll(), [("ask", "YMJG-4", 1), ("clear", "YMJG-4", 1)]))
+    # 6-10 jumps out: only a report closer than, and near, an earlier one (H-5GUI, 8 jumps) alerts.
+    def approach():
+        intel.last_scan = float("-inf")
+        return sorted((r.system, r.jumps, r.closer_from) for r in intel.poll("Me", 0) if intel.alerts(r))
+    say(intel_a, "Far", "MO-FIF  Someone")                                # 8 jumps, nowhere near H-5GUI
+    say(intel_a, "Far", "Q-EHMJ  Someone")                                # 9, next to H-5GUI...
+    say(intel_a, "Far", "Q-EHMJ  clr")                                    # ...but cleared
+    steps.append(("far: no alert", approach(), []))
+    say(intel_a, "Far", "7-K5EL  Someone")                                # 7, next to H-5GUI
+    say(intel_a, "Far", "KX-2UI  Someone")                                # 7, next to MO-FIF
+    steps.append(("far: closing in", approach(), [("7-K5EL", 7, "H-5GUI"), ("KX-2UI", 7, "MO-FIF")]))
+    say(intel_a, "Far", "7-K5EL  still here")                             # same system: not closer
+    steps.append(("far: not closer", approach(), []))
     say(local, "EVE System", "Channel changed to Local : PM-DWE")
     say(intel_a, "Scout", "PM-DWE*  Anulos  in local")
     steps.append(("moved", poll(), [("hostile", "PM-DWE", 0)]))
     steps.append(("heartbeat summary", [intel.summary(), intel.summary()],
-                  ["wc.Vale+Tr+Ge: 6 msgs (2 hostile in range, 1 clear, 1 out of range, 2 other), last 0 min ago",
-                   "wc.Vale+Tr+Ge: 0 msgs (0 hostile in range, 0 clear, 0 out of range, 0 other), last 0 min ago"]))
+                  ["wc.Vale+Tr+Ge: 12 msgs (2 hostile in range, 2 approaching, 1 clear, 5 out of range, 2 other), "
+                   "last 0 min ago", "wc.Vale+Tr+Ge: 0 msgs (0 hostile in range, 0 approaching, 0 clear, "
+                   "0 out of range, 0 other), last 0 min ago"]))
     # Only Me's log is read; My Alt's takes over once Me's stops being written.
     steps.append(("one log per channel", sorted(l.who() for l in intel.logs.values()
                                                 if intel.primary.get(l.channel.lower()) == l.path), ["Me"]))

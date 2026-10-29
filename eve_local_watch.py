@@ -76,6 +76,8 @@ DEFAULTS = {
     "intel_channels": [],       # chat channels to read intel from, e.g. ["wc.Vale+Tr+Ge"]
                                 # ([] = auto-detect, false = off)
     "intel_jumps": 5,           # alert on hostiles reported this many jumps away or closer
+    "intel_watch_jumps": 10,    # further out, up to this many jumps: alert only when a second
+                                # report has them moving closer (0 = off)
     "chatlog_dir": "",          # "" = find EVE's Chatlogs folder automatically
     "jump_bridges": [],         # extra connections, e.g. [["4-HWWF", "P3EN-E"]] (Ansiblex)
     "sound_intel": str(SOUNDS / SOUND_FILES["intel"]),
@@ -745,6 +747,11 @@ CLEAR_WORDS = {"clr", "clear", "cleared"}
 ASK_WORDS = {"status", "stat", "status?", "?"}
 INTEL_MAX_AGE = 300           # seconds; older messages (e.g. a log read late) are stale
 INTEL_RECAP = 1800            # seconds of a channel's history summed up once when the watcher starts
+# Beyond intel_jumps (up to intel_watch_jumps) a hostile alerts only on a second
+# report closer to you, within APPROACH_HOPS gates of a report from the last
+# APPROACH_WINDOW seconds (two reports on opposite sides are not one gang).
+APPROACH_WINDOW = 600
+APPROACH_HOPS = 2
 # Auto-detect: a channel is intel if most of its recent messages name a system
 # (an intel channel ~80%, corp / alliance / fleet chat ~10%).
 AUTO_DAYS = 3                 # logs written to this recently are looked at
@@ -879,6 +886,7 @@ class Report:
     kind: str            # hostile / clear / ask / none (no system named)
     system: str | None = None
     jumps: int | None = None   # None = not within range (or your system is unknown)
+    closer_from: str | None = None   # beyond intel_jumps: the earlier, further report it follows
 
 
 class Intel:
@@ -906,6 +914,7 @@ class Intel:
         self.last_msg = {}        # channel -> time of its newest message
         self.total = collections.Counter()    # channel -> messages read since start (for the UI)
         self.backlog = []         # startup recap reports, for the UI to show (they never alarm)
+        self.watched = {}         # system -> time of its last hostile report within watch range
 
     def scan(self):
         """Pick up new log files (EVE starts one per channel when you log in / rejoin)."""
@@ -938,11 +947,40 @@ class Intel:
         return max(self.where.values(), key=lambda v: v[1])[0] if self.where else None
 
     def nearby(self, system):
-        key = (system, self.cfg["intel_jumps"])        # jumps can change live (TUI settings)
+        """{system: jumps} out to the watch range (intel_watch_jumps, at least intel_jumps)."""
+        reach = max(self.cfg["intel_jumps"], self.cfg["intel_watch_jumps"] or 0)
+        key = (system, reach)                           # jumps can change live (TUI settings)
         if self.near_cache[0] != key:
             start = self.map.name(system) if system else None
-            self.near_cache = (key, self.map.within(start, self.cfg["intel_jumps"]) if start else {})
+            self.near_cache = (key, self.map.within(start, reach) if start else {})
         return self.near_cache[1]
+
+    def in_range(self, r):
+        return r.jumps is not None and r.jumps <= self.cfg["intel_jumps"]
+
+    def alerts(self, r):
+        """Should this report be shown: hostile / clear in range, or hostile closing in."""
+        return r.kind in ("hostile", "clear") and self.in_range(r) or r.closer_from is not None
+
+    def track(self, r, near):
+        """Remember hostile reports in watch range; a hostile beyond intel_jumps that is
+        closer than, and near, a recent one gets `closer_from` set."""
+        if r.time is None or r.jumps is None:
+            return r
+        if r.kind == "clear":
+            self.watched.pop(r.system, None)
+        if r.kind != "hostile":
+            return r
+        self.watched = {s: t for s, t in self.watched.items()
+                        if (r.time - t).total_seconds() <= APPROACH_WINDOW}
+        if not self.in_range(r):
+            hops = self.map.within(r.system, APPROACH_HOPS)
+            prev = [s for s in self.watched if s in hops and near.get(s, -1) > r.jumps]
+            if prev:
+                r.closer_from = max(prev, key=lambda s: self.watched[s])
+                self.watched.pop(r.closer_from)        # they moved on: a repeat here isn't closer
+        self.watched[r.system] = r.time
+        return r
 
     def classify(self, t, channel, sender, text, near):
         words = [w.strip(".,;:!()[]<>\"'") for w in text.split()]
@@ -954,7 +992,8 @@ class Intel:
             for w in words:
                 w = w.rstrip("*")
                 if len(w) >= 3 and w.isupper() and w.lower() not in CLEAR_WORDS | ASK_WORDS:
-                    hits = [s for s in near if s.lower().startswith(w.lower())]
+                    hits = [s for s, j in near.items() if j <= self.cfg["intel_jumps"]
+                            and s.lower().startswith(w.lower())]
                     if len(hits) == 1:
                         systems.add(hits[0])
         if not systems:
@@ -1051,9 +1090,10 @@ class Intel:
             if (utc - m[0]).total_seconds() > INTEL_MAX_AGE:
                 self.counts[m[1], "other"] += 1
                 continue
-            r = self.classify(*m, near)
+            r = self.track(self.classify(*m, near), near)
             self.counts[r.channel, "other" if r.kind not in ("hostile", "clear") else
-                        "far" if r.jumps is None else "nearby" if r.kind == "hostile" else "clear"] += 1
+                        "approaching" if r.closer_from else "far" if not self.in_range(r) else
+                        "nearby" if r.kind == "hostile" else "clear"] += 1
             reports.append(r)
         return reports
 
@@ -1098,7 +1138,9 @@ class Intel:
         latest = {}
         for m in msgs:
             r = self.classify(m[0], log.channel, *m[1:], near)
-            if r.jumps is not None and r.kind in ("hostile", "clear"):
+            if (utc - r.time).total_seconds() <= APPROACH_WINDOW:
+                self.track(r, near)                    # so a report after startup can follow it
+            if self.in_range(r) and r.kind in ("hostile", "clear"):
                 latest[r.system] = r
         mins = INTEL_RECAP // 60
         if not system:
@@ -1132,10 +1174,10 @@ class Intel:
         parts = []
         for log in {log.channel: log for log in self.logs.values() if log.channel != "Local"}.values():
             c = log.channel
-            n = {k: self.counts[c, k] for k in ("nearby", "clear", "far", "other")}
+            n = {k: self.counts[c, k] for k in ("nearby", "approaching", "clear", "far", "other")}
             last = self.last_msg.get(c)
             ago = f", last {(datetime.now(timezone.utc) - last).total_seconds() / 60:.0f} min ago" if last else ""
-            parts.append(f"{c}: {sum(n.values())} msgs ({n['nearby']} hostile in range, {n['clear']} clear, "
+            parts.append(f"{c}: {sum(n.values())} msgs ({n['nearby']} hostile in range, {n['approaching']} approaching, {n['clear']} clear, "
                          f"{n['far']} out of range, {n['other']} other){ago}")
         self.counts.clear()
         return "; ".join(parts)
@@ -1145,8 +1187,13 @@ class Intel:
         system = self.here(character)
         return {"dir": self.dir, "names": list(self.names), "system": system,
                 "found": sorted({log.channel for log in self.logs.values() if log.channel != "Local"}),
-                "near": len(self.nearby(system)) if system else 0, "jumps": self.cfg["intel_jumps"],
+                "near": sum(j <= self.cfg["intel_jumps"] for j in self.nearby(system).values()) if system else 0,
+                "jumps": self.cfg["intel_jumps"],
                 "total": sum(self.total.values()), "last": max(self.last_msg.values(), default=None)}
+
+    def watch_note(self, near):
+        w = self.cfg["intel_watch_jumps"] or 0
+        return f" ({len(near)} within {w} watched for approaching)" if w > self.cfg["intel_jumps"] else ""
 
     def status(self, character):
         system = self.here(character)
@@ -1156,8 +1203,9 @@ class Intel:
             return "intel: no intel channel found yet (auto-detect)"
         if not any(log.channel.lower() in self.channels for log in self.logs.values()):
             return "intel: no log for " + ", ".join(self.names)
-        where = (f"in {system}, {len(self.nearby(system))} systems within {self.cfg['intel_jumps']} jumps"
-                 if system else "your system unknown")
+        near = self.nearby(system)
+        where = (f"in {system}, {sum(j <= self.cfg['intel_jumps'] for j in near.values())} systems within "
+                 f"{self.cfg['intel_jumps']} jumps" + self.watch_note(near) if system else "your system unknown")
         return f"intel: {where} | {self.summary()}"
 
 
@@ -1261,16 +1309,17 @@ def cmd_intel(cfg):
         print(f"{listener} is in {system} (since {t:%H:%M} EVE time)")
     system = intel.here(cfg["character"])
     near = intel.nearby(system)
-    print(f"distances from {system}: {len(near)} systems within {cfg['intel_jumps']} jumps")
+    print(f"distances from {system}: {sum(j <= cfg['intel_jumps'] for j in near.values())} systems "
+          f"within {cfg['intel_jumps']} jumps" + intel.watch_note(near))
     # Every message of the current logs, as the watcher would read it (ignoring age).
     intel.seen.clear()
     msgs = sorted(m for log in intel.logs.values() if intel.primary.get(log.channel.lower()) == log.path
                   for m in ChatLog(log.path, log.channel, True).read())
     msgs = [m for m in msgs if not intel.duplicate(*m)]
     for t, sender, text in msgs[-25:]:
-        r = intel.classify(t, "", sender, text, near)
+        r = intel.track(intel.classify(t, "", sender, text, near), near)
         where = "-" if r.system is None else f"{r.system} ({'far' if r.jumps is None else r.jumps})"
-        alert = "ALERT" if r.kind == "hostile" and r.jumps is not None else ""
+        alert = "CLOSER" if r.closer_from else "ALERT" if r.kind == "hostile" and intel.in_range(r) else ""
         print(f"  {t:%H:%M:%S} {r.kind:7s} {where:16s} {alert:5s} {sender} > {text}")
 
 
@@ -1306,7 +1355,9 @@ def cmd_run(cfg, ctx=None):
     intel = Intel(cfg, recap=True) if cfg["intel_channels"] is not False else None
     if intel:
         print(ts(), f"Intel: reading {', '.join(map(bold, intel.names)) or 'an auto-detected channel'} from "
-              f"{intel.dir}, alerting within {cfg['intel_jumps']} jumps" if intel.dir else
+              f"{intel.dir}, alerting within {cfg['intel_jumps']} jumps"
+              + (f", and up to {cfg['intel_watch_jumps']} when reported moving closer"
+                 if (cfg['intel_watch_jumps'] or 0) > cfg['intel_jumps'] else "") if intel.dir else
               "Intel: EVE's Chatlogs folder not found - set chatlog_dir in the config", flush=True)
     else:
         print(ts(), f'Intel: off ("intel_channels": false in {CONFIG_PATH})', flush=True)
@@ -1364,9 +1415,11 @@ def cmd_run(cfg, ctx=None):
         intel.backlog.clear()
         ctx.live["intel"] = intel.info(character())
         for r in intel.poll(character(), now):
-            if r.jumps is None or r.kind not in ("hostile", "clear"):
+            if not intel.alerts(r):
                 continue
             where = away(r.jumps)
+            if r.closer_from:
+                where += f", closing in from {r.closer_from}"
             print(ts(), f"INTEL {r.kind.upper()} {r.system} ({where}) [{r.channel}] {r.sender} > {r.text}",
                   flush=True)
             ctx.event("intel", report=r, where=where)
